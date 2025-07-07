@@ -11,6 +11,7 @@ def compute_gt_heatmap(pred_ab, gt_ab, threshold=0.3):
     gt_heatmap = (error > threshold).float()
     return gt_heatmap
 
+
 class CompositeLoss(nn.Module):
     def __init__(self, pixel_loss_weight=1.0, lpips_weight=0.1):
         super().__init__()

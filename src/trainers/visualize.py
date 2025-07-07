@@ -1,17 +1,17 @@
-from utils.clickmap import initial_clickmap
-from utils.clickmap import update_clickmap
 import os
 import random
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
 from skimage.color import lab2rgb
+import matplotlib.pyplot as plt
+from utils.clickmap import initial_clickmap, update_clickmap
 
-def visualize_results(colornet, editnet, dataset, device, 
+
+def visualize_results(colornet, editnet, dataset, device,
                       n_samples=3, clicks_list=[1, 5, 10], max_clicks=10, save_dir=None):
     colornet.eval()
     editnet.eval()
-    
+
     n_rows = n_samples * len(clicks_list)
     n_cols = 3
 
@@ -26,7 +26,7 @@ def visualize_results(colornet, editnet, dataset, device,
     with torch.no_grad():
         for sample_idx in range(n_samples):
             idx = random.randint(0, len(dataset) - 1)
-            x_L, x_ab = dataset[idx]   # x_L: [1,H,W], x_ab: [2,H,W]
+            x_L, x_ab = dataset[idx]  # x_L: [1,H,W], x_ab: [2,H,W]
             x_L_batch = x_L.unsqueeze(0).to(device)
             x_ab_batch = x_ab.unsqueeze(0).to(device)
 
@@ -71,7 +71,7 @@ def visualize_results(colornet, editnet, dataset, device,
                 axes[global_row, 0].imshow(x_L_np, cmap='gray')
                 axes[global_row, 0].axis('off')
                 if i == 0:
-                    axes[global_row, 0].set_title(f"Sample {sample_idx+1}: Grayscale", fontsize=14)
+                    axes[global_row, 0].set_title(f"Sample {sample_idx + 1}: Grayscale", fontsize=14)
 
                 axes[global_row, 1].imshow(rgb_pred)
                 click_mask = click_map_i[0, 0].cpu().numpy()
@@ -87,7 +87,6 @@ def visualize_results(colornet, editnet, dataset, device,
     plt.subplots_adjust(wspace=0.05, hspace=0.2)
 
     if save_dir is not None:
-
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, "visualization_results.png")
         plt.savefig(save_path, dpi=300)
@@ -99,7 +98,16 @@ def visualize_pretrain_results(colornet, dataset, device,
                                n_samples=3,
                                clicks_list=[1, 5, 10],
                                save_dir=None):
-
+    """
+    可视化 Phase1 预训练 ColorNet 的上色结果（随机点击，并在预测图上标红色“×”）。
+    参数和原 visualize_results 保持一致，只不过不调用 EditNet：
+    - colornet: 预训练好的 ColorNet
+    - dataset: CocoColorizationDataset
+    - device: torch.device
+    - n_samples: 随机抽取图像数量
+    - clicks_list: 要展示的点击次数列表
+    - save_dir: 若不为 None，则将图保存到此目录
+    """
     colornet.eval()
 
     n_rows = n_samples * len(clicks_list)
@@ -114,41 +122,48 @@ def visualize_pretrain_results(colornet, dataset, device,
         for sample_idx in range(n_samples):
             idx = random.randint(0, len(dataset) - 1)
             x_L, x_ab = dataset[idx]
-            x_L_b   = x_L.unsqueeze(0).to(device)   # [1,1,H,W]
-            x_ab_b  = x_ab.unsqueeze(0).to(device)  # [1,2,H,W]
+            x_L_b = x_L.unsqueeze(0).to(device)  # [1,1,H,W]
+            x_ab_b = x_ab.unsqueeze(0).to(device)  # [1,2,H,W]
 
-            L_np = x_L.squeeze().cpu().numpy() * 100.0         # [H,W]
-            ab_gt = x_ab.cpu().numpy().transpose(1,2,0) * 128.0  # [H,W,2]
-            lab_gt = np.stack([L_np, ab_gt[...,0], ab_gt[...,1]], axis=-1)
+            # 准备 GT 图
+            L_np = x_L.squeeze().cpu().numpy() * 100.0  # [H,W]
+            ab_gt = x_ab.cpu().numpy().transpose(1, 2, 0) * 128.0  # [H,W,2]
+            lab_gt = np.stack([L_np, ab_gt[..., 0], ab_gt[..., 1]], axis=-1)
             rgb_gt = lab2rgb(lab_gt.clip(
-                np.array([  0, -128, -128]),
-                np.array([100,  127,  127])
+                np.array([0, -128, -128]),
+                np.array([100, 127, 127])
             ))
 
             for i, n_click in enumerate(clicks_list):
+                # 随机点击
                 clickmap = initial_clickmap(x_L_b, x_ab_b, num_clicks=n_click).to(device)
                 inp = torch.cat([x_L_b, clickmap], dim=1)
                 pred_ab = colornet(inp)
 
+                # 转 numpy、lab→rgb
                 ab_np = pred_ab.squeeze().cpu().numpy() * 128.0
                 lab_pred = np.stack([
                     L_np, ab_np[0], ab_np[1]
                 ], axis=-1)
                 rgb_pred = lab2rgb(lab_pred.clip(
-                    np.array([  0, -128, -128]),
-                    np.array([100,  127,  127])
+                    np.array([0, -128, -128]),
+                    np.array([100, 127, 127])
                 ))
 
-                mask = (clickmap.squeeze(0).sum(0) > 0).cpu().numpy()
+                # 计算点击位置坐标
+                # clickmap: [1,2,H,W]，将两通道累加后取大于0的位置
+                mask = (clickmap.squeeze(0).sum(0) > 0).cpu().numpy()  # [H,W]
                 ys, xs = np.where(mask)
 
                 row = sample_idx * len(clicks_list) + i
 
-                axes[row, 0].imshow(L_np / 100.0, cmap='gray')
+                # 列 0: 灰度图
+                axes[row, 0].imshow(L_np / 100.0, cmap='gray')  # 归一化回 [0,1] 显示
                 axes[row, 0].axis('off')
                 if i == 0:
-                    axes[row, 0].set_title(f"Sample {sample_idx+1}\nGrayscale", fontsize=14)
+                    axes[row, 0].set_title(f"Sample {sample_idx + 1}\nGrayscale", fontsize=14)
 
+                # 列 1: 预测图 + 点击位置
                 axes[row, 1].imshow(rgb_pred)
                 axes[row, 1].scatter(xs, ys,
                                      marker='x',
@@ -158,6 +173,7 @@ def visualize_pretrain_results(colornet, dataset, device,
                 axes[row, 1].axis('off')
                 axes[row, 1].set_title(f"Predicted with {n_click} clicks", fontsize=14)
 
+                # 列 2: 真值图
                 axes[row, 2].imshow(rgb_gt)
                 axes[row, 2].axis('off')
                 if i == 0:
@@ -172,44 +188,3 @@ def visualize_pretrain_results(colornet, dataset, device,
         print(f"Saved visualization to {save_path}")
 
     plt.show()
-
-
-def plot_loss_curve(loss_list, save_path=None, show=False):
-    """
-    Plot training loss curve.
-    Args:
-        loss_list (list of float): training loss for each epoch.
-        save_path (str or None): if not None, saves the plot to the specified path.
-        show (bool): whether to call plt.show() (set to False in headless environments).
-    """
-    plt.figure(figsize=(6,4), dpi=100)
-    epochs = list(range(1, len(loss_list) + 1))
-    plt.plot(epochs, loss_list, marker='o', linestyle='-')
-    plt.title("ColorNet Pretrain Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.grid(True)
-    if save_path:
-        plt.savefig(save_path, dpi=300)
-    if show:
-        plt.show()
-    plt.close()
-
-
-def plot_PSNR_curve(psnr_curve, save_path=None, show=False):
-    plt.figure(figsize=(6,4), dpi=100)
-    x = list(psnr_curve.keys())
-    y = [psnr_curve[s] for s in x]
-    plt.plot(x, y, marker='o', linestyle='-')
-    plt.title("PSNR vs. Number of Random Clicks")
-    plt.xlabel("Number of Clicks")
-    plt.ylabel("PSNR (dB)")
-    plt.grid(True)
-    plt.xticks(x)
-
-    if save_path:
-
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=300)
-    if show:
-        plt.show()

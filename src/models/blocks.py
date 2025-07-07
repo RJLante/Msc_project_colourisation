@@ -12,8 +12,10 @@ class DoubleConv(nn.Module):
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
         )
+
     def forward(self, x):
         return self.conv(x)
+
 
 class EnhancedDoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -34,6 +36,7 @@ class EnhancedDoubleConv(nn.Module):
             nn.BatchNorm2d(out_channels)
         )
         self.relu = nn.ReLU(inplace=True)
+
     def forward(self, x):
         identity = x
         out = self.conv1(x)
@@ -53,6 +56,7 @@ class DepthwiseSeparableConv(nn.Module):
         self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
         self.bn = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU(inplace=True)
+
     def forward(self, x):
         x = self.depthwise(x)
         x = self.pointwise(x)
@@ -68,25 +72,29 @@ class LightDoubleConv(nn.Module):
             DepthwiseSeparableConv(in_channels, out_channels, kernel_size=3, padding=1),
             DepthwiseSeparableConv(out_channels, out_channels, kernel_size=3, padding=1)
         )
+
     def forward(self, x):
         return self.conv(x)
-    
+
 
 class Down(nn.Module):
     def __init__(self, in_channels, out_channels, conv_block=DoubleConv):
         super().__init__()
         self.double_conv = conv_block(in_channels, out_channels)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+
     def forward(self, x):
         x_conv = self.double_conv(x)
         x_pool = self.pool(x_conv)
         return x_conv, x_pool
+
 
 class Up(nn.Module):
     def __init__(self, in_channels, out_channels, conv_block=DoubleConv):
         super().__init__()
         self.up_transpose = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
         self.conv = conv_block(out_channels * 2, out_channels)
+
     def forward(self, x, skip):
         x = self.up_transpose(x)
         x = torch.cat([skip, x], dim=1)

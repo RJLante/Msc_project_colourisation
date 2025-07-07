@@ -5,7 +5,7 @@ def initial_clickmap(x_L, x_ab, num_clicks=50):
     """
     random choose num_clicks pixel
     set click position as 1 on clickmask
-    in ab channel, ab value of GT at postion of clickmask, other place 0 
+    in ab channel, ab value of GT at postion of clickmask, other place 0
     input:
       x_L: [B, 1, H, W] L channel
       x_ab: [B, 2, H, W] ab channel of GT
@@ -24,6 +24,7 @@ def initial_clickmap(x_L, x_ab, num_clicks=50):
             clickmap[b, 1:, y, x] = x_ab[b, :, y, x]
     return clickmap
 
+
 def update_clickmap(current_click, pred_click, x_ab):
     """
     use argmax on heatmap to get click position and update clickmap
@@ -31,7 +32,7 @@ def update_clickmap(current_click, pred_click, x_ab):
     With EditNet update cumulative clickmap
       current_click: [B,3,H,W] current cumulative clickmap (1 channel clickmask, 2 ab channel)
       pred_click:  [B,1,H,W] EditNet predicted [0,1]
-      x_ab:        [B,2,H,W] GT ab 
+      x_ab:        [B,2,H,W] GT ab
 
     Find the pixel position with the highest heatmap value in the unclicked location
     """
@@ -48,6 +49,7 @@ def update_clickmap(current_click, pred_click, x_ab):
         new_click[b, 1:3, y, x] = x_ab[b, :, y, x]
     return new_click
 
+
 class ArgmaxSTE(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input):
@@ -59,33 +61,33 @@ class ArgmaxSTE(torch.autograd.Function):
         # one-hot
         return one_hot.view_as(input)
         # one_hot = one_hot.view_as(input)
-        # return one_hot + (input - input.detach())   
+        # return one_hot + (input - input.detach())
 
     @staticmethod
     def backward(ctx, grad_output):
         # STE
         return grad_output
 
-def update_clickmap_ste(current_click, pred_click, x_ab):
+
+BIG_NEG = -1e4
+
+
+def update_clickmap_ste(clickmap, heatmap, gt_ab):
     """
-    out-of-place
-    current_click: [B, 3, H, W]
-    pred_click:    [B, 1, H, W]
-    x_ab:          [B, 2, H, W]
+    clickmap: [B,3,H,W]  heatmap: [B,1,H,W]  gt_ab: [B,2,H,W]
     """
-    B, _, H, W = pred_click.shape
-    updated_list = []
-    for b in range(B):
-        cur = current_click[b]            # [3, H, W]
-        unclicked = 1 - cur[0]              # [H, W]
-        masked_pred = pred_click[b, 0] * unclicked + (1 - unclicked) * (-1e9)
-        one_hot = ArgmaxSTE.apply(masked_pred)  # shape: [H, W]
-        # [one_hot, one_hot*a channel, one*b channel]
-        update_tensor = torch.stack([one_hot, one_hot * x_ab[b, 0], one_hot * x_ab[b, 1]], dim=0)
-        updated = cur + update_tensor
-        # clamping（out-of-place）
-        updated_first = updated[0].clamp(max=1.0)
-        # updated clickmap [3, H, W]
-        updated = torch.cat([updated_first.unsqueeze(0), updated[1:]], dim=0)
-        updated_list.append(updated)
-    return torch.stack(updated_list, dim=0)
+    B, _, H, W = heatmap.shape
+    unclicked = (clickmap[:, 0] == 0)  # [B,H,W]
+    masked = heatmap.squeeze(1) * unclicked + (~unclicked) * BIG_NEG
+    flat_idx = masked.view(B, -1).argmax(dim=1)  # [B]
+    y = flat_idx // W
+    x = flat_idx % W
+    # 构造 one-hot
+    one_hot = torch.zeros_like(masked).view(B, -1)
+    one_hot[torch.arange(B), flat_idx] = 1
+    one_hot = one_hot.view(B, H, W)
+
+    clickmap[:, 0] = torch.maximum(clickmap[:, 0], one_hot)
+    clickmap[:, 1] += one_hot * gt_ab[:, 0]
+    clickmap[:, 2] += one_hot * gt_ab[:, 1]
+    return clickmap
