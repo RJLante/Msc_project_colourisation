@@ -75,9 +75,8 @@ class EditNet(nn.Module):
 
         out = self.final_conv(u7)  # [B,1,H,W]  logits
         B, C, H, W = out.shape
-        out = out.view(B, -1)  # 展平成 [B, H*W]
-        # 加入温度 T 控制 Softmax 平滑度，T>1 时更平滑
+        out = out.view(B, -1)
         out = F.softmax(out / self.temperature, dim=1)
-        out = out.view(B, 1, H, W)  # 恢复到 [B,1,H,W]
+        out = out.view(B, 1, H, W)
 
         return out

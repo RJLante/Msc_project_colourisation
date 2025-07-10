@@ -17,7 +17,6 @@ class UNetColorNet(nn.Module):
         self.bottleneck = conv_block(384, 512)
 
         C_btm = 512
-        # SE 分支：全局平均 -> 降维 -> 升维 -> sigmoid
         self.se_reduce = nn.Conv2d(C_btm, C_btm // se_reduction, kernel_size=1)
         self.se_expand = nn.Conv2d(C_btm // se_reduction, C_btm, kernel_size=1)
 

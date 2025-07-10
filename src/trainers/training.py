@@ -10,18 +10,7 @@ import logging
 def train_color_net_epoch(
         colornet, dataloader, optimizer, scheduler, device, composite_loss,
         total_clicks=20, clip_grad=1.0):
-    """
-    预训练 ColorNet：从 1 个随机点击开始，逐步累积随机点击，
-    每次前向都计算一次 loss，最后在一个 batch 上将所有 loss 累加后反向。
-    Args:
-        colornet      : UNetColorNet 模型
-        dataloader    : 训练集 DataLoader
-        optimizer     : 优化器
-        device        : 设备 ("cuda" 或 "cpu")
-        composite_loss: CompositeLoss 实例
-        total_clicks  : 最终要累积的点击总数（默认为 20）
-        clip_grad     : 梯度裁剪阈值
-    """
+
     colornet.train()
     scaler = GradScaler()
     total_epoch_loss = 0.0
@@ -30,33 +19,27 @@ def train_color_net_epoch(
         x_L, x_ab = x_L.to(device), x_ab.to(device)
         B, _, H, W = x_L.shape
 
-        # 1) 先随机生成一个点击
         cumulative_click = initial_clickmap(x_L, x_ab, num_clicks=1).to(device)
         loss_accum = 0.0
 
-        # 2) 第一次前向和 loss
         with autocast(device_type=device.type):
             inp = torch.cat([x_L, cumulative_click], dim=1)
             pred_ab = colornet(inp)
             loss_accum = composite_loss(pred_ab, x_ab)
 
-        # 3) 依次再累积剩余的 (total_clicks-1) 个随机点击
         for _ in range(total_clicks - 1):
-            # 3.1 新随机点击
             new_click = initial_clickmap(x_L, x_ab, num_clicks=1).to(device)
-            # 3.2 只在之前未点击的位置上叠加
             mask = (cumulative_click[:, 0:1] == 0.0)
             added_mask = new_click[:, 0:1] * mask
             cumulative_click[:, 0:1] += added_mask
             cumulative_click[:, 1:3] += new_click[:, 1:3] * added_mask
 
-            # 3.3 再次前向和 loss
+
             with autocast(device_type=device.type):
                 inp = torch.cat([x_L, cumulative_click], dim=1)
                 pred_ab = colornet(inp)
                 loss_accum += composite_loss(pred_ab, x_ab)
 
-        # 4) 一个 batch 上所有 step 的 loss 累加后反向
         optimizer.zero_grad()
         scaler.scale(loss_accum).backward()
         scaler.unscale_(optimizer)
@@ -98,32 +81,23 @@ def train_edit_net_epoch(colornet, editnet, dataloader, optimizer, device, crite
         heatmap_loss_accum = 0.0
 
         with autocast(device_type=device.type):
-            # 1) EditNet 预测 logits -> Softmax 后输出 heatmap Q: [B,1,H,W]
             pred_heatmap = editnet(x_ab, pred_ab_current, x_L)
 
-            # 2) 构造目标分布 P: 平滑 + 归一化
             with torch.no_grad():
                 raw_error = torch.abs(pred_ab_current - x_ab).sum(dim=1, keepdim=True)  # [B,1,H,W]
-                smooth_error = gaussian_blur(raw_error)  # 高斯模糊
+                smooth_error = gaussian_blur(raw_error)
                 P = smooth_error.view(B, -1)  # [B, H*W]
-                P = P / (P.sum(dim=1, keepdim=True) + 1e-6)  # 归一化，和为1
+                P = P / (P.sum(dim=1, keepdim=True) + 1e-6)
 
-            # 3) 计算 KL 散度：把 pred_heatmap 展平并取 log
             Q = pred_heatmap.view(B, -1)  # [B, H*W]
-            logQ = torch.log(Q + 1e-8)  # 避免 log0
+            logQ = torch.log(Q + 1e-8)
             kl_loss = F.kl_div(logQ, P, reduction='batchmean')
-            # --- 熵正则 (鼓励高熵，防止分布塌陷) ---
-            # entropy = -sum_i Q_i log Q_i
             entropy = - (Q * logQ).sum(dim=1).mean()
-            # reg_loss: 用于反向，带上熵正则
             reg_heatmap_loss = kl_loss - lambda_entropy * entropy
             heatmap_loss_accum += reg_heatmap_loss
 
             total_kl_loss_log += kl_loss.item()
             total_entropy_log += entropy.item()
-
-            # current_heatmap_loss = criterion_heatmap(pred_heatmap, smoothed_error_target.detach())
-            # heatmap_loss_accum += current_heatmap_loss
 
         # update clickmap
         cumulative_click = update_clickmap_ste(cumulative_click.detach(), pred_heatmap, x_ab)
@@ -131,47 +105,37 @@ def train_edit_net_epoch(colornet, editnet, dataloader, optimizer, device, crite
         # ColorNet predict
         with autocast(device_type=device.type):
             colornet_input = torch.cat([x_L, cumulative_click], dim=1)
-            pred_ab_current = colornet(colornet_input)  # update current predict ab
+            pred_ab_current = colornet(colornet_input)
             current_color_loss = criterion_color(pred_ab_current, x_ab)
-            color_loss_accum += current_color_loss  # accumulate color loss
+            color_loss_accum += current_color_loss
 
         for _ in range(num_iterations):
-            # pred_ab_input_for_editnet = pred_ab_current.detach()
             with autocast(device_type=device.type):
-                # 1) EditNet 预测 logits -> Softmax 后输出 heatmap Q: [B,1,H,W]
                 pred_heatmap = editnet(x_ab, pred_ab_current, x_L)
 
-                # 2) 构造目标分布 P: 平滑 + 归一化
                 with torch.no_grad():
                     raw_error = torch.abs(pred_ab_current - x_ab).sum(dim=1, keepdim=True)  # [B,1,H,W]
-                    smooth_error = gaussian_blur(raw_error)  # 高斯模糊
+                    smooth_error = gaussian_blur(raw_error)
                     P = smooth_error.view(B, -1)  # [B, H*W]
-                    P = P / (P.sum(dim=1, keepdim=True) + 1e-6)  # 归一化，和为1
+                    P = P / (P.sum(dim=1, keepdim=True) + 1e-6)
 
-                # 3) 计算 KL 散度：把 pred_heatmap 展平并取 log
                 Q = pred_heatmap.view(B, -1)  # [B, H*W]
-                logQ = torch.log(Q + 1e-8)  # 避免 log0
+                logQ = torch.log(Q + 1e-8)
                 kl_loss = F.kl_div(logQ, P, reduction='batchmean')
-                # --- 熵正则 (鼓励高熵，防止分布塌陷) ---
-                # entropy = -sum_i Q_i log Q_i
                 entropy = - (Q * logQ).sum(dim=1).mean()
-                # reg_loss: 用于反向，带上熵正则
                 reg_heatmap_loss = kl_loss - lambda_entropy * entropy
                 heatmap_loss_accum += reg_heatmap_loss
 
                 total_kl_loss_log += kl_loss.item()
                 total_entropy_log += entropy.item()
 
-                # current_heatmap_loss = criterion_heatmap(pred_heatmap, smoothed_error_target.detach())
-                # heatmap_loss_accum += current_heatmap_loss
-
                 cumulative_click = update_clickmap_ste(cumulative_click.detach(), pred_heatmap, x_ab)
 
             with autocast(device_type=device.type):
                 colornet_input = torch.cat([x_L, cumulative_click], dim=1)
-                pred_ab_current = colornet(colornet_input)  # update current predict ab
+                pred_ab_current = colornet(colornet_input)
                 current_color_loss = criterion_color(pred_ab_current, x_ab)
-                color_loss_accum += current_color_loss  # accumulate color loss
+                color_loss_accum += current_color_loss
 
         final_color_loss = color_loss_accum / (num_iterations + 1)
         final_heatmap_loss = heatmap_loss_accum / (num_iterations + 1)
@@ -189,7 +153,7 @@ def train_edit_net_epoch(colornet, editnet, dataloader, optimizer, device, crite
         optimizer.zero_grad()
         scaler.scale(combined_loss).backward()
 
-        scaler.unscale_(optimizer)  # 先 unscale 梯度
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(editnet.parameters(), max_norm=1.0)
 
         scaler.step(optimizer)
@@ -218,7 +182,6 @@ def train_color_net_pingpong_epoch(colornet, editnet, dataloader, optimizer, dev
     colornet.train()
     editnet.eval()
 
-    # 设置 requires_grad
     for param in colornet.parameters():
         param.requires_grad = True
     for param in editnet.parameters():
@@ -233,7 +196,6 @@ def train_color_net_pingpong_epoch(colornet, editnet, dataloader, optimizer, dev
 
         cumulative_click = initial_clickmap(x_L, x_ab, num_clicks=initial_clicks).to(device)
 
-        loss_accum = 0.0
         inp = torch.cat([x_L, cumulative_click], dim=1)
         with autocast(device_type=device.type):
             pred_ab = colornet(inp)
@@ -256,7 +218,7 @@ def train_color_net_pingpong_epoch(colornet, editnet, dataloader, optimizer, dev
 
         optimizer.zero_grad()
         scaler.scale(loss_accum).backward()
-        scaler.unscale_(optimizer)  # 先 unscale 梯度
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(colornet.parameters(), max_norm=clip_grad)
         scaler.step(optimizer)
         scaler.update()
@@ -270,11 +232,6 @@ def train_edit_net_pingpong_epoch(colornet, editnet, dataloader, optimizer, devi
                                   num_iterations=4,
                                   lambda_heatmap=0.1, gaussian_blur=T.GaussianBlur(kernel_size=7, sigma=1.5),
                                   lambda_entropy=0.01):
-    """
-    Trains EditNet in a ping-pong fashion, minimizing both:
-    1. Downstream colorization error (original loss).
-    2. Direct heatmap prediction error against a smoothed ground truth error map (new loss).
-    """
     editnet.train()
     colornet.eval()
 
@@ -291,34 +248,28 @@ def train_edit_net_pingpong_epoch(colornet, editnet, dataloader, optimizer, devi
     total_entropy_log = 0.0
 
     for batch_idx, (x_L, x_ab) in enumerate(dataloader):
-        x_L, x_ab = x_L.to(device), x_ab.to(device)  # Ground truth AB
+        x_L, x_ab = x_L.to(device), x_ab.to(device)
         B, _, H, W = x_L.shape
 
         cumulative_click = torch.zeros(B, 3, H, W, device=device, requires_grad=False)
         pred_ab_current = torch.zeros(B, 2, H, W, device=device, requires_grad=False)
 
         color_loss_accum = 0.0
-        heatmap_loss_accum = 0.0  # Accumulator for the new heatmap loss
+        heatmap_loss_accum = 0.0
 
         with autocast(device_type=device.type):
-            # 1) EditNet 预测 logits -> Softmax 后输出 heatmap Q: [B,1,H,W]
             pred_heatmap = editnet(x_ab, pred_ab_current, x_L)
 
-            # 2) 构造目标分布 P: 平滑 + 归一化
             with torch.no_grad():
                 raw_error = torch.abs(pred_ab_current - x_ab).sum(dim=1, keepdim=True)  # [B,1,H,W]
-                smooth_error = gaussian_blur(raw_error)  # 高斯模糊
+                smooth_error = gaussian_blur(raw_error)
                 P = smooth_error.view(B, -1)  # [B, H*W]
-                P = P / (P.sum(dim=1, keepdim=True) + 1e-6)  # 归一化，和为1
+                P = P / (P.sum(dim=1, keepdim=True) + 1e-6)
 
-            # 3) 计算 KL 散度：把 pred_heatmap 展平并取 log
             Q = pred_heatmap.view(B, -1)  # [B, H*W]
-            logQ = torch.log(Q + 1e-8)  # 避免 log0
+            logQ = torch.log(Q + 1e-8)
             kl_loss = F.kl_div(logQ, P, reduction='batchmean')
-            # --- 熵正则 (鼓励高熵，防止分布塌陷) ---
-            # entropy = -sum_i Q_i log Q_i
             entropy = - (Q * logQ).sum(dim=1).mean()
-            # reg_loss: 用于反向，带上熵正则
             reg_heatmap_loss = kl_loss - lambda_entropy * entropy
             heatmap_loss_accum += reg_heatmap_loss
 
@@ -336,24 +287,18 @@ def train_edit_net_pingpong_epoch(colornet, editnet, dataloader, optimizer, devi
 
         for i in range(num_iterations):
             with autocast(device_type=device.type):
-                # 1) EditNet 预测 logits -> Softmax 后输出 heatmap Q: [B,1,H,W]
                 pred_heatmap = editnet(x_ab, pred_ab_current, x_L)
 
-                # 2) 构造目标分布 P: 平滑 + 归一化
                 with torch.no_grad():
                     raw_error = torch.abs(pred_ab_current - x_ab).sum(dim=1, keepdim=True)  # [B,1,H,W]
-                    smooth_error = gaussian_blur(raw_error)  # 高斯模糊
+                    smooth_error = gaussian_blur(raw_error)
                     P = smooth_error.view(B, -1)  # [B, H*W]
-                    P = P / (P.sum(dim=1, keepdim=True) + 1e-6)  # 归一化，和为1
+                    P = P / (P.sum(dim=1, keepdim=True) + 1e-6)
 
-                # 3) 计算 KL 散度：把 pred_heatmap 展平并取 log
                 Q = pred_heatmap.view(B, -1)  # [B, H*W]
-                logQ = torch.log(Q + 1e-8)  # 避免 log0
+                logQ = torch.log(Q + 1e-8)
                 kl_loss = F.kl_div(logQ, P, reduction='batchmean')
-                # --- 熵正则 (鼓励高熵，防止分布塌陷) ---
-                # entropy = -sum_i Q_i log Q_i
                 entropy = - (Q * logQ).sum(dim=1).mean()
-                # reg_loss: 用于反向，带上熵正则
                 reg_heatmap_loss = kl_loss - lambda_entropy * entropy
                 heatmap_loss_accum += reg_heatmap_loss
 
@@ -361,11 +306,11 @@ def train_edit_net_pingpong_epoch(colornet, editnet, dataloader, optimizer, devi
                 total_entropy_log += entropy.item()
 
             cumulative_click = update_clickmap_ste(cumulative_click.detach(), pred_heatmap,
-                                                   x_ab)  # Detach old clicks map
+                                                   x_ab)
 
             colornet_input = torch.cat([x_L, cumulative_click], dim=1)
             with autocast(device_type=device.type):
-                pred_ab_current = colornet(colornet_input)  # Update current prediction
+                pred_ab_current = colornet(colornet_input)
                 current_color_loss = criterion_color(pred_ab_current, x_ab)
             color_loss_accum += current_color_loss
 
@@ -376,7 +321,7 @@ def train_edit_net_pingpong_epoch(colornet, editnet, dataloader, optimizer, devi
 
         optimizer.zero_grad()
         scaler.scale(total_combined_loss).backward()
-        scaler.unscale_(optimizer)  # 先 unscale 梯度
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(editnet.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()

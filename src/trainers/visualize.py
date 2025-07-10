@@ -98,16 +98,6 @@ def visualize_pretrain_results(colornet, dataset, device,
                                n_samples=3,
                                clicks_list=[1, 5, 10],
                                save_dir=None):
-    """
-    可视化 Phase1 预训练 ColorNet 的上色结果（随机点击，并在预测图上标红色“×”）。
-    参数和原 visualize_results 保持一致，只不过不调用 EditNet：
-    - colornet: 预训练好的 ColorNet
-    - dataset: CocoColorizationDataset
-    - device: torch.device
-    - n_samples: 随机抽取图像数量
-    - clicks_list: 要展示的点击次数列表
-    - save_dir: 若不为 None，则将图保存到此目录
-    """
     colornet.eval()
 
     n_rows = n_samples * len(clicks_list)
@@ -125,7 +115,6 @@ def visualize_pretrain_results(colornet, dataset, device,
             x_L_b = x_L.unsqueeze(0).to(device)  # [1,1,H,W]
             x_ab_b = x_ab.unsqueeze(0).to(device)  # [1,2,H,W]
 
-            # 准备 GT 图
             L_np = x_L.squeeze().cpu().numpy() * 100.0  # [H,W]
             ab_gt = x_ab.cpu().numpy().transpose(1, 2, 0) * 128.0  # [H,W,2]
             lab_gt = np.stack([L_np, ab_gt[..., 0], ab_gt[..., 1]], axis=-1)
@@ -135,12 +124,10 @@ def visualize_pretrain_results(colornet, dataset, device,
             ))
 
             for i, n_click in enumerate(clicks_list):
-                # 随机点击
                 clickmap = initial_clickmap(x_L_b, x_ab_b, num_clicks=n_click).to(device)
                 inp = torch.cat([x_L_b, clickmap], dim=1)
                 pred_ab = colornet(inp)
 
-                # 转 numpy、lab→rgb
                 ab_np = pred_ab.squeeze().cpu().numpy() * 128.0
                 lab_pred = np.stack([
                     L_np, ab_np[0], ab_np[1]
@@ -150,20 +137,16 @@ def visualize_pretrain_results(colornet, dataset, device,
                     np.array([100, 127, 127])
                 ))
 
-                # 计算点击位置坐标
-                # clickmap: [1,2,H,W]，将两通道累加后取大于0的位置
                 mask = (clickmap.squeeze(0).sum(0) > 0).cpu().numpy()  # [H,W]
                 ys, xs = np.where(mask)
 
                 row = sample_idx * len(clicks_list) + i
 
-                # 列 0: 灰度图
-                axes[row, 0].imshow(L_np / 100.0, cmap='gray')  # 归一化回 [0,1] 显示
+                axes[row, 0].imshow(L_np / 100.0, cmap='gray')
                 axes[row, 0].axis('off')
                 if i == 0:
                     axes[row, 0].set_title(f"Sample {sample_idx + 1}\nGrayscale", fontsize=14)
 
-                # 列 1: 预测图 + 点击位置
                 axes[row, 1].imshow(rgb_pred)
                 axes[row, 1].scatter(xs, ys,
                                      marker='x',
@@ -173,7 +156,6 @@ def visualize_pretrain_results(colornet, dataset, device,
                 axes[row, 1].axis('off')
                 axes[row, 1].set_title(f"Predicted with {n_click} clicks", fontsize=14)
 
-                # 列 2: 真值图
                 axes[row, 2].imshow(rgb_gt)
                 axes[row, 2].axis('off')
                 if i == 0:

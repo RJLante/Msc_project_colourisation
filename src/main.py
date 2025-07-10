@@ -68,7 +68,7 @@ else:
 
 
 def main():
-    torch.backends.cudnn.benchmark = True  # 启动 cudnn 自动调优
+    torch.backends.cudnn.benchmark = True
     torch.manual_seed(42)
     np.random.seed(42)
     random.seed(42)
@@ -83,9 +83,9 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     batch_size = 4
     image_size = 256
-    pretrain_color_epochs = 10  # 118k -> 10 epoch 足够
-    pretrain_edit_epochs = 6  # τ 退火跨度
-    colornet_pingpong_cycle = 1  # 每 cycle 1+1 epoch
+    pretrain_color_epochs = 10
+    pretrain_edit_epochs = 6
+    colornet_pingpong_cycle = 1
     editnet_pingpong_cycle = 1
     num_pingpong_cycles = 4
 
@@ -107,7 +107,7 @@ def main():
     def freeze_bn(model: nn.Module):
         for m in model.modules():
             if isinstance(m, nn.BatchNorm2d):
-                m.eval()  # 固定 running_mean / var
+                m.eval()
                 m.weight.requires_grad_(False)
                 m.bias.requires_grad_(False)
 
@@ -147,8 +147,8 @@ def main():
     lambda_heatmap = 0.3
     lambda_entropy = 0.05
 
-    lambda_entropy_base = 0.1  # 初始较高熵正则权重
-    lambda_entropy_end = 0.01  # 训练末期较低熵正则权重
+    lambda_entropy_base = 0.1
+    lambda_entropy_end = 0.01
 
     if os.path.exists(checkpoint_path):
         ckpt = torch.load(checkpoint_path, map_location=device)
@@ -275,16 +275,14 @@ def main():
         print("=== Phase 2: Pretraining EditNet ===")
         logging.info("=== Phase 2: Pretraining EditNet ===")
         for epoch in range(start_pretrain_edit_epoch, pretrain_edit_epochs):
-            # 1) 线性退火温度：从 T=4.0 → T=1.0
-            #   epoch=0 时 T=4.0；epoch=pretrain_edit_epochs-1 时 T=1.0
             t = (epoch - start_pretrain_edit_epoch) / (pretrain_edit_epochs - 1)
             editnet.temperature = TAU_START + t * (TAU_END - TAU_START)
             loss = train_edit_net_epoch(
                 colornet, editnet, train_loader, edit_optimizer, device,
-                criterion_color=l1_loss,  # 使用 L1 作为颜色损失 (根据原代码)
+                criterion_color=l1_loss,
                 num_iterations=9,
-                lambda_heatmap=lambda_heatmap,  # 传入权重
-                gaussian_blur=gaussian_blur,  # 传入模糊器
+                lambda_heatmap=lambda_heatmap,
+                gaussian_blur=gaussian_blur,
                 lambda_entropy=lambda_entropy
             )
             edit_scheduler.step()
@@ -321,7 +319,6 @@ def main():
             print(f"--- Ping Pong Cycle {cycle + 1} ---")
             logging.info(f"--- Ping Pong Cycle {cycle + 1} ---")
 
-            # 针对每个 cycle，调整 lambda_entropy: 随 cycle 线性递减
             t_cycle = cycle / (num_pingpong_cycles - 1)
             lambda_entropy_cycle = lambda_entropy_base * (1 - t_cycle) + lambda_entropy_end * t_cycle
 
@@ -346,7 +343,6 @@ def main():
                 logging.info(
                     f"Cycle{cycle + 1} Ep{epoch + 1}: PSNR@10={final['psnr']:.2f}, SSIM@10={final['ssim']:.4f}")
 
-                # 分别保存
                 if final['psnr'] > best_psnr:
                     best_psnr = final['psnr'];
                     torch.save(colornet.state_dict(), "best_psnr_model.pth")
@@ -364,16 +360,16 @@ def main():
                             f"Early stopping ColorNet at "
                             f"cycle {cycle + 1}, epoch {epoch + 1}"
                         )
-                        break  # 跳出当前 cycle 中的 ColorNet 训练 loop
+                        break
 
             for epoch in range(editnet_pingpong_cycle):
                 editnet.temperature = 1.0
                 loss = train_edit_net_pingpong_epoch(
                     colornet, editnet, train_loader, edit_optimizer, device,
-                    criterion_color=l1_loss,  # 使用 L1 作为颜色损失
+                    criterion_color=l1_loss,
                     num_iterations=9,
-                    lambda_heatmap=lambda_heatmap,  # 传入权重
-                    gaussian_blur=gaussian_blur,  # 传入模糊器
+                    lambda_heatmap=lambda_heatmap,
+                    gaussian_blur=gaussian_blur,
                     lambda_entropy=lambda_entropy_cycle,
                 )
 
@@ -384,14 +380,12 @@ def main():
             save_checkpoint(phase=3, pretrain_color_epoch=pretrain_color_epochs,
                             pretrain_edit_epoch=pretrain_edit_epochs, pingpong_cycle=cycle + 1)
 
-        # 保存 Ping Pong ColorNet Loss 曲线
         plot_loss_curve(
             loss_list=pingpong_color_losses,
             save_path="loss_plots/pingpong_color_loss.png",
             show=False,
             title="Ping Pong ColorNet Loss"
         )
-        # 保存 Ping Pong EditNet Loss 曲线
         plot_loss_curve(
             loss_list=pingpong_edit_losses,
             save_path="loss_plots/pingpong_edit_loss.png",
@@ -414,9 +408,8 @@ def main():
             x_L, x_ab = x_L.to(device), x_ab.to(device)
             pred = colornet(torch.cat([x_L, initial_clickmap(x_L, x_ab, num_clicks=1).to(device)], dim=1))
             for s in psnr_ssim:
-                # 这里只示范一次点击后的 LPIPS，若要多点击，可复用 evaluate_color_net_pingpong 逻辑
-                pr_rgb = lab_to_rgb_tensor(x_L[0:1, 0], pred[0:1]).to(device)
-                gt_rgb = lab_to_rgb_tensor(x_L[0:1, 0], x_ab[0:1]).to(device)
+                pr_rgb = lab_to_rgb_tensor(x_L[0:1, 0], pred[0]   ).to(device)
+                gt_rgb = lab_to_rgb_tensor(x_L[0:1, 0], x_ab[0]   ).to(device)
                 pr_n = pr_rgb * 2 - 1;
                 gt_n = gt_rgb * 2 - 1
                 lp = loss_lpips(pr_n, gt_n).item()

@@ -1,14 +1,10 @@
 import torch
-from utils.clickmap import initial_clickmap
+from utils.clickmap import *
 from utils.metrics import compute_psnr
-from torch.amp import autocast
+from skimage.metrics import structural_similarity as ssim
 
 def evaluate_color_net(colornet, dataloader, device,
                        steps=(1,5,10,20), samples_per_image=3):
-    """
-    Baseline 只评估 PSNR/SSIM，不跑 LPIPS
-    返回 { step: {'psnr':…, 'ssim':…} }
-    """
     colornet.eval()
 
     psnr_sums = {s:0.0 for s in steps}
@@ -62,10 +58,6 @@ def evaluate_color_net(colornet, dataloader, device,
 def evaluate_color_net_pingpong(colornet, editnet, dataloader, device,
                                 steps=(1,5,10,20), samples_per_image=3,
                                 initial_clicks=1):
-    """
-    Ping-Pong 只评估 PSNR/SSIM，不跑 LPIPS
-    返回 { step: {'psnr':…, 'ssim':…} }
-    """
     colornet.eval()
     editnet.eval()
 
